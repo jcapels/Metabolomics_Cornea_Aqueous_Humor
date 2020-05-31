@@ -1,0 +1,962 @@
+---
+title: "MTBLS444: Quantitative metabolomic analysis of the human cornea and aqueous humor"
+author: "João Capela PG38274, Tiago Ferreira PG33765, Tiago Oliveira PG24096"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    depth: 3
+    number_sections: true 
+    theme: flatly 
+    highlight: tango
+    df_print: paged
+    code_download: true
+    code_folding: show
+---
+```{r setup, cache = FALSE, echo = FALSE}
+options(width = 150, digits = 4)
+knitr::opts_chunk$set(autodep = TRUE, cache = TRUE)
+ #automatically cache and associate objects
+
+# eval=F nao corre o codigo dentro do campo
+``` 
+
+
+``` {r include=FALSE}
+library("RCurl")
+library("KEGGgraph")
+library("DT")
+library("specmine")
+library("RCytoscape")
+library("GOstats")
+library("FELLA")
+load("parte3.RData")
+```
+
+# Introduction
+
+Keratoconus (KC) is the most common type of cornea dystrophia, having been shown that it usually includes, not besides structural but also enzymatic and proteomic changes. Also, there is an important mucosa surrounding the cornea, called the aqueous humor (AH) which is responsible for the transport of some vital metabolites that will serve as nutrients for the cornea. As such, it comes in handy studying its metabolic profile and learn about what, if any, changes might occur in the nutritional role of the aqueous humor towards cornea, and if there is any relationship between healthy humans and those with KC. Having this in mind, a set of investigators has conducted an approach to this issue by collecting samples from KC patients and healthy human beings, and done the proper proteomics analysis, which in the following case study, the NMR portion will be reviewed. Due to the hardness in obtaining samples from healthy, living patients, Snytnikova and collaborators chose to extract the "healthy" samples from cadavers to serve as a control group. This created an additional problem: the biochemical processes that partake in the post-mortem stage often alter the metabolic composition of aqueous humor (AH) which in turn will consequently also change cornea's metabolome. 
+In sum, this study has collected samples (both AH and KC) from 11 Keratoconus patients and 13 cadavers. The analytical data for quantification and identification of metabolites by NMR was done using a Bruker BioSpin and LC-MS.
+
+The following data corresponds to the metabolic data from the NMR analysis and is accessible on [MetaboLights](https://www.ebi.ac.uk/metabolights/) through the codename MTBLS444 and it was processed using the help of Specmine. An R package which provides a set of methods for metabolomics data analysis, for example: data loading in different formats, pre-processing, metabolite identification, univariate and multivariate data analysis, machine learning, feature selection and pathway analysis. 
+
+# Package Installation
+## Instalation of Required Packages
+
+```{r Packages instalation, eval=F}
+BiocManager::install("KEGGgraph")
+BiocManager::install("FELLA", version = "3.8")
+BiocManager::install("RCyjs")
+BiocManager::install("RCytoscape")
+BiocManager::install("GOstats")
+```
+
+## Loading Required Packages
+
+```{r Packages Load, eval=F}
+library("RCurl")
+library("KEGGgraph")
+library("DT")
+library("specmine")
+library("RCytoscape")
+library("GOstats")
+library("FELLA")
+```
+
+
+# Dataset Exploration
+## Dataset Download
+
+Data was collected from the database MetaboLights (codename: MTBLS444) as aforementioned, loaded and read the NMR results in R with the following script:
+```{r Dataset Load, eval=F}
+MTBLS444 = read_Bruker_files("MTBLS444/1/data", 
+                             samples.names = NULL,
+                             metadata_file = "MTBLS444/metadata1.csv",
+                             m.header_col = T, 
+                             m.header_row = T,
+                             zipped=T, 
+                             description="Cornea - NMR", 
+                             label.x = "ppm", 
+                             label.values = "intensity")
+```
+
+```{r DataFrame MBLS444}
+as.data.frame(MTBLS444$data)
+```
+
+
+
+```{r Summary MTBLS444}
+sum_dataset(MTBLS444, stats=T) #Summary of the dataset
+
+count_missing_values(MTBLS444)
+```
+
+Summarization of data and further interpretation through the NMR spectra were conducted. The data has shown us 44 samples in concordance with the baseline paper, and no missing values.
+
+
+```{r Plot Spectra MTBLS444}
+par(mfrow=c(2,2)) #Split graphical representations in one single window
+
+plot_spectra(dataset = MTBLS444, 
+             column.class = c("Tissue"))
+abline(h = 50000)
+
+plot_spectra(dataset = MTBLS444, 
+             column.class = c("Tissue"), 
+             ylim=c(0, 4e7))
+abline(h = 50000)
+
+plot_spectra(dataset = MTBLS444, 
+             column.class = c("Disease"))
+abline(h = 50000)
+
+plot_spectra(dataset = MTBLS444, 
+             column.class = c("Disease"), 
+             ylim=c(0, 4e7))
+abline(h = 50000)
+
+mtext(text = "Spectra Plots", 
+      side = 3, 
+      outer = T, 
+      line = -3)
+```
+
+After appropriate plotting and scale adjustment with definition of a threshold at 50000 we could roughly at a glance, identify that there is a clear difference between the data from the tissues and those with disease, as it would be expected.
+
+```{r MTBLS444 Cleanup, eval=F}
+MTBLS444_Clean = remove_metadata_variables(MTBLS444, 
+                                           variables.to.remove = "Human state")
+```
+
+Further cleanup of data was also partaken, in order to have a simplified, easier to work metadata. In this particular case, since normal tissues are all from cadavers and altered tissues from living patients, the variable "Human state" was removed from metadata.
+
+
+## Peak Calling 
+
+Following this process, peak detection was further partaken with the following code: 
+
+```{r Peak Detection, eval=F}
+MTBLS444_Peaks = detect_nmr_peaks_from_dataset(dataset = MTBLS444)
+nrow(MTBLS444_Peaks$data) #Will depict the number of peaks
+count_missing_values(MTBLS444_Peaks)
+```
+
+It was possible to detect 396 peaks and 13116 not assinged (NA) values. 
+
+```{r Clean Missing Values, eval=F}
+MTBLS444_Peaks_Clean = remove_variables_by_nas(dataset = MTBLS444_Peaks, 
+                                               by.percent = T,
+                                               max.nas = 66)  #NA value filtering
+
+MTBLS444_Peaks_Clean = missingvalues_imputation(dataset = MTBLS444_Peaks_Clean, 
+                                                method = "value", 
+                                                value = 1e-5) #Substitution of missing values with a very small number 
+```
+
+All the peaks containing at least 66% NA values were removed and all of the remaining NA values were imputed a very small value, close to 0.
+
+```{r Peak id final stats}
+nrow(MTBLS444_Peaks_Clean$data) #Number of peaks - after NA removal
+count_missing_values(MTBLS444_Peaks_Clean)
+```
+
+The analysis resulted in 100 peaks and 0 missing values.
+
+
+## Data Manipulation
+
+The next step was to scale and organise our data, ensuring a normal distribution. This distribution is necessary in order for the statistical analysis to continue. Before the normalisation, the data was also scaled as follows:
+
+```{r MTBLS Data Manipulation, eval=F}
+MTBLS444_Scaled = scaling(dataset = MTBLS444_Peaks_Clean, 
+                          method = "auto")
+
+MTBLS444_Normalized = normalize(dataset = MTBLS444_Peaks_Clean, 
+                                method = "median")
+```
+
+The summary of scaled and normalised datasets can be seen bellow.
+
+```{r Sum Datasets}
+sum_dataset(MTBLS444_Scaled)
+sum_dataset(MTBLS444_Normalized)
+```
+
+
+# Univariate Statistical Analysis 
+
+## Normality Test
+
+In order to assess if our NMR data or peak intensity data follows a normal distribution, a Shapiro Test was performed to each sample with the following code:
+
+```{r Normality test}
+dist_test_data = c()
+for (samplenr in c(1:44)) {
+  dist_test_data = c(dist_test_data, shapiro.test(sample(MTBLS444$data[,samplenr], 5000))$p.value)
+}
+
+dist_test = data.frame(dist_test_data)
+rownames(dist_test) = colnames(MTBLS444$data)
+colnames(dist_test) =  c("p-value Data")
+dist_test
+dist_test[dist_test >= 0.05]
+```
+
+Because of the test's constraint on the number of values, it was performed with a random sample of 5000 intensity values for each sample.
+The test results indicate that none of our samples follow a normal distribution since all of the p-values are smaller than 0.05 by a very large degree.
+
+This is to be expected because NMR data is characterized by many intensity peaks that often overlap along the ppm range.
+The presence of many intensity peaks makes it impossible for the full spectrum of our data to form a single normal distribution curve as it can be evidenced by the p-values in order of magnitude of e-94.
+
+## ANOVA
+
+In order to determine which ppms have statistical differences in intensity peaks between different conditions, a Multi-factor ANOVA was performed. 
+
+```{r ANOVA, eval=F}
+anova_result=multifactor_aov_all_vars(dataset = MTBLS444_Scaled,  
+                                      metadata.vars = c("Tissue","Disease"), "Tissue*Disease")
+pvalues_anova=multifactor_aov_pvalues_table(anova_result)
+```
+
+For this analysis two factors were considered: the type of tissue and whether the person had KC or not. The Variance analysis was conducted with the assumption that the values of intensity were generated following a normal distribution.
+
+```{r Bonferroni Correction, eval=F}
+adj.bonf.tissues = p.adjust(pvalues_anova$Tissue,"bonferroni")
+adj.bonf.disease=p.adjust(pvalues_anova$Disease,"bonferroni")
+adj.bonf.interaction=p.adjust(pvalues_anova$`Tissue:Disease`,"bonferroni")
+
+pvalues_anova$Tissue=adj.bonf.tissues
+pvalues_anova$Disease=adj.bonf.disease
+pvalues_anova$`Tissue:Disease`=adj.bonf.interaction
+```
+
+Considering that multiple comparisons were conducted in ANOVA, a large set of inferences were made as well, so, to avoid erroneous inferences to occur, the Bonferroni correction to p-values was performed.
+
+```{r Filtragem ANOVA, eval=F}
+anova_tissues_ppms=rownames(pvalues_anova[which(pvalues_anova$Tissue<0.05),])
+anova_disease_ppms=rownames(pvalues_anova[which(pvalues_anova$Disease<0.05),])
+anova_interaction_ppms=rownames(pvalues_anova[which(pvalues_anova$`Tissue:Disease`<0.05),])
+```
+
+After the Bonferroni correction, a selection of the ppms whose previously calculated p-value was lower than 0.05 was conducted.
+
+```{r NR de picos com diferencas em ANOVA}
+length(anova_tissues_ppms)
+length(anova_disease_ppms)
+length(anova_interaction_ppms)
+```
+
+The number of peaks presenting significant variance between tissues and whether had KC or not was 24 and 9 respectively. 
+
+# Fold Change
+
+Fold change was also performed to determine differences in intensity considering a specific condition as a reference. 
+
+```{r Fold Change, eval=F}
+Disease_foldchange = fold_change(dataset = MTBLS444_Normalized,
+                                 metadata.var = "Disease", 
+                                 ref.value = "none")
+
+Tissue_foldchange = fold_change(dataset = MTBLS444_Normalized,
+                                metadata.var = "Tissue", 
+                                ref.value = "cornea")
+```
+
+For the fold change analysis, the reference conditions chosen were the absence of disease (control) and the cornea as a reference tissue.
+
+```{r Fold Change Plots}
+plot_fold_change(dataset = MTBLS444_Normalized, 
+                 fc.results = Disease_foldchange, 
+                 fc.threshold = 2, 
+                 xlab = "ppms")
+mtext(text = "Diseases KC Fold Change", 
+      side = 3, 
+      outer = T, 
+      line = -3)
+
+plot_fold_change(dataset = MTBLS444_Normalized, 
+                 fc.results = Tissue_foldchange, 
+                 fc.threshold = 2, 
+                 xlab = "ppms")
+mtext(text = "Tissue Fold Change",
+      side = 3, 
+      outer = T, 
+      line = -3)
+```
+
+As it can be seen in the plots, several peaks were related to over or under expression, regarding that some present fold changes above or below a threshold of twofold.
+
+```{r Fold change peaks, eval=F}
+ppms_disease_foldchange=rownames(Disease_foldchange[Disease_foldchange$FoldChange > 2, ])
+ppms_tissue_foldchange=rownames(Tissue_foldchange[Tissue_foldchange$FoldChange > 2, ])
+```
+
+The peaks with at least 2-fold change were identified.
+
+```{r Number of peaks in fold change}
+length(ppms_tissue_foldchange)
+length(ppms_disease_foldchange)
+```
+
+There are 60 peaks with significant fold change difference between tissues and 34 between the presence of KC.
+
+```{r Cross ANOVA with Fold Change, eval=F}
+cross_disease=c()
+for (ppm in anova_disease_ppms){
+  if (ppm %in% ppms_disease_foldchange){
+    cross_disease=c(cross_disease,ppm)
+  }
+}
+
+data_tissues_metabolites=MTBLS444_Peaks_Clean$data[as.vector(cross_tissue),]
+
+cross_tissue=c()
+for (ppm in anova_tissues_ppms){
+  if (ppm %in% ppms_tissue_foldchange){
+    cross_tissue=c(cross_tissue,ppm)
+  }
+}
+
+data_disease_metabolites=MTBLS444_Peaks_Clean$data[as.vector(cross_disease),]
+
+data_interaction_metabolites=MTBLS444_Peaks_Clean$data[as.vector(anova_interaction_ppms),]
+```
+
+The results from ANOVA and Fold Change were crossed in order to consistently identify peaks with differential intensity.
+
+```{r Number of peaks crossed in ANOVA and Fold Change}
+nrow(data_tissues_metabolites)
+nrow(data_disease_metabolites)
+```
+
+The resulting number of peaks filtered were 21 for differential intensity in tissues and 6 for the presence of KC.
+
+```{r Heatmaps}
+heatmap(data_tissues_metabolites, 
+        main="Differences in expression between tissues",
+        xlab="Type of sample",
+        ylab="ppm")
+
+heatmap(data_disease_metabolites,
+        main="Differences in expression between diseases (KC or none)",
+        xlab="Type of sample",
+        ylab="ppm")
+
+heatmap(data_interaction_metabolites,
+        main="Differences in expression regarding the interaction of the factors",
+        xlab="Type of sample",
+        ylab="ppm")
+```
+
+Through the quick analysis of the first heatmap, it can be suggested that several ppms had lower intensities in samples of AH in comparison with the ones of the cornea. In the second heatmap, it can be seen a clear difference in intensities between the samples of patients with KC and others, since there is lower intensities associated with KC samples. Finally, looking at the last heatmap, it can be verified that for the samples of AH from KC patients (KeratAH) , the detection revealed lower intensities in comparison to the samples of the control's AH (NormAH), whereas for 5.17, 6.04, 6.47 and 3.54 ppm the result was the contrary. For the other samples, the intensity values were apparantly similar.
+
+
+# Metabolite Identification
+
+The identification of the metabolites in the dataset was obtained using Specmine, with the following code:
+
+```{r Metabolite Identification, eval=F}
+metabolites_ID = nmr_identification(dataset = MTBLS444_Scaled,
+                                    temp = 25,
+                                    nucl = "1H",
+                                    clust.maxPeaks = 40, 
+clust.nTop=5)
+```
+
+The experimental data was obtained using 1H-NMR 700 MHz at 25ºC, and Specmine does not have specific libraries for identification of 700 MHz NMR. This can lead to problems in the identification of metabolites present in the dataset.
+
+```{r HMDB - PPMS cross reference}
+id_metabs=c()
+ppms=c()
+for (cluster in metabolites_ID){
+  id_metabs=c(id_metabs, names(cluster$summary))
+}
+
+for (cluster in metabolites_ID){
+  for (metabolites.matched in cluster$metabolites.matched){
+    ppms=c(ppms, metabolites.matched$matched_peaks_ref)
+  }
+}
+
+metabolites=data.frame(id_metabs, ppms)
+as.data.frame(metabolites)
+```
+
+A summary table of the identified HMDB IDs and corresponding ppms can be seen in the table above.
+
+```{r Significant HMDB, eval=F}
+met_filt=c()
+for (i in 1:nrow(metabolites))
+{
+  if (as.character(metabolites[i,2]) %in% cross_tissue){
+    print(metabolites[i,1])
+    met_filt=c(met_filt,as.character(metabolites[i,1]))
+  }
+}
+met_filt_tissue = met_filt
+
+met_filt=c()
+for (i in 1:nrow(metabolites))
+{
+  if (as.character(metabolites[i,2]) %in% cross_disease){
+    print(metabolites[i,1])
+    met_filt=c(met_filt,as.character(metabolites[i,1]))
+  }
+}
+met_filt_disease = met_filt
+
+met_filt=c()
+for (i in 1:nrow(metabolites))
+{
+  if (as.character(metabolites[i,2]) %in% anova_interaction_metabolites){
+    print(metabolites[i,1])
+    met_filt=c(met_filt,as.character(metabolites[i,1]))
+  }
+}
+met_filt_interaction = met_filt
+```
+
+Filtering of the identified metabolites was performed, where only the ppms identified with differential expression were kept.
+
+```{r convert HMDB to KEGG, eval=F}
+id_filt_tissue = convert_hmdb_to_kegg(met_filt_tissue)
+id_filt_disease = convert_hmdb_to_kegg(met_filt_disease)
+id_filt_interaction = convert_hmdb_to_kegg(met_filt_interaction)
+```
+
+The HMDB IDs of the identified metabolites were converted to compound KEGG IDs with the following code.
+
+```{r final metabolites}
+as.data.frame(id_filt_tissue) 
+as.data.frame(id_filt_disease)
+as.data.frame(id_filt_interaction)
+```
+
+After filtering the identified IDs, only 2 metabolites remain: Glycine, and Dihydrouracil.
+Glycine is a proteinogenic amino acid and Dihydrouracil is an intermediate in catabolism of Uracil.
+
+
+# Pathway Analysis
+
+To analyse the pathways of the compounds involved in the dataset, we first obtained the organism code for Homo sapiens used in KEGG.
+
+```{r Organism ID, eval=F}
+get_OrganismsCodes() #human code -> hsa
+```
+
+KEGG pathways ID's are composed of 2 elements. The first is a prefix, composed entirely of letters representing the organism and a suffix representing the pathway.
+
+```{r Pathways, eval=F}
+tissue_paths = get_paths_with_cpds_org("hsa", id_filt_tissue)
+disease_paths = get_paths_with_cpds_org("hsa", id_filt_disease)
+interaction_paths = get_paths_with_cpds_org("hsa", id_filt_interaction)
+```
+```{r Pathways print, eval=F}
+tissue_paths 
+disease_paths
+interaction_paths 
+```
+
+We proceeded with the identification of the pathways from human metabolism that contain at least one of the metabolites identified as differentially expressed for all conditions.
+
+Since the only metabolites identified are Dihydrouracil and Glycine, some of the identified pathways overlap.
+
+## Pyrimidine metabolism - hsa00240
+```{r eval = F}
+hsa00240_t = pathway_analysis(id_filt_tissue,
+                 "hsa00240",
+                 nodeNames="names",
+                 map.zoom=F,
+                 nodeTooltip=T)
+
+hsa00240_d = pathway_analysis(id_filt_disease,
+                 "hsa00240",
+                 nodeNames="names",
+                 map.zoom=F,
+                 nodeTooltip=T)
+```
+
+```{r}
+hsa00240_t
+hsa00240_d
+```
+
+## Glycine, serine and threonine metabolism
+```{r eval = F}
+hsa00260_t = pathway_analysis(id_filt_tissue,
+                 "hsa00260",
+                 nodeNames="names",
+                 map.zoom=F,
+                 nodeTooltip=T)
+```
+
+```{r}
+hsa00260_t
+```
+
+## Glutathione metabolism - hsa00480
+```{r eval = F}
+hsa00480_t = pathway_analysis(id_filt_tissue,
+                 "hsa00480",
+                 nodeNames="names",
+                 map.zoom=F,
+                 nodeTooltip=T)
+```
+
+```{r}
+hsa00480_t
+```
+
+Considering the NMR analysis done by Snytkova and cooperators (2017) and the previous filtering of data, Glycine is the only liable metabolite for further evaluation of pathways.
+Glycine is a major compound in vertebrates as it's an important component in numerous processes in the central nervous system, and most importantly, in synaptic transportation. As such, it's an important study target since its ability to mediate neuronal stimuli by aminoacid transport indicates a probable action in cortical-ocular interaction.
+After a thorough literature search on Glutathione (GSH) and Pyrimidine pathways, it was found that GSH has a significant variation in it's concentration on brain tissues in a determined post mortem interval (PMI), indicating a major metabolic shift in this pathway. The identified brain cells with major variations in GSH were of the Cerebral Cortex and cerebellum, two main culprits for eye funcion in humans (Harish et al., 2011). As for pyrimidine synthesis. A 2015 study by Costa and her colleagues found that in a PMI of 2,6 to 24h, a significant increase in urea production was reported in human tissues, mainly in blood, with the exception of the ocular tissue Vitreous Humor, which in turn remains relatively stable. These results imply that a major change in metabolites maybe an influence in these results, mainly at the level of Glycine metabolism, through these pathways.
+
+
+# Enrichment Analysis
+
+In order to obtain a better grasp of the possible enzymes and reactions altered in the different conditions, we performed a metabolite enrichment analysis using FELLA.
+
+```{r Fella database, eval=F}
+set.seed(1)
+# Filter overview pathways
+graph <- buildGraphFromKEGGREST(
+  organism = "hsa",
+  filter.path = c("00970", "00120", "00240", "00260", "00630","00860","00480","00410","00770"))
+
+tmpdir <- paste0(tempdir(), "/my_database")
+# Mke sure the database does not exist from a former vignette build
+# Otherwise the vignette will rise an error
+# because FELLA will not overwrite an existing database
+unlink(tmpdir, recursive = TRUE)
+buildDataFromGraph(
+  keggdata.graph = graph,
+  databaseDir = tmpdir,
+  internalDir = FALSE,
+  matrices = "diffusion",
+  normality = "diffusion",
+  niter = 50)
+
+fella.data <- loadKEGGdata(
+  databaseDir = tmpdir,
+  internalDir = FALSE,
+  loadMatrix = "diffusion"
+)
+```
+```{r}
+fella.data
+```
+
+First, the FELLA database was created, using only pathways identified previously and data from KEGG
+
+```{r compound IDS, eval=F}
+tissue_comp = unique(substring(text = tissue_paths$compounds, 5))
+disease_comp = unique(substring(text = disease_paths$compounds, 5))
+interaction_comp = unique(substring(text = interaction_paths$compounds, 5))
+```
+
+We extracted the compound IDs for each condition.
+
+```{r Enrichment, eval=F}
+compounds<-unique(c(tissue_comp,disease_comp))
+analysis<- defineCompounds(
+  compounds = compounds,
+  data = fella.data)
+
+getExcluded(analysis)
+
+analysis <- runDiffusion(
+  object = analysis,
+  data = fella.data,
+  approx = "normality")
+```
+
+We proceeded with the enrichment analysis using diffusing algorithms and normalisation through z-score.
+
+```{r enrichment results}
+tab.all <- generateResultsTable(
+  method = "diffusion",
+  nlimit = 15,
+  object = analysis,
+  data = fella.data)
+
+nlimit <- 15
+vertex.label.cex <- 1
+plot(
+  analysis,
+  method = "diffusion",
+  data = fella.data,
+  nlimit = nlimit,
+  vertex.label.cex = vertex.label.cex)
+
+tab.all
+```
+
+The top 15 enzymes and reactions enriched in these sets, ordered by p.score, can be seen in the table. Their relationship to each other and to Glycine and Dihydrouracil can be seen in the node graph.
+
+# PCA
+
+In order to explore the relatedness of our samples we performed a PCA analysis.
+
+```{r PCA}
+MTBLS444_pca=pca_analysis_dataset(MTBLS444_Scaled,scale=F)
+MTBLS444_importance=pca_importance(MTBLS444_pca)
+
+as.data.frame(MTBLS444_importance[1,])
+plot(MTBLS444_importance[1,],ylab = "Standard deviation",
+      xlab = "Principal Component",
+      main="Standard deviation vs Principal Component", pch=19,
+      col="blue",
+      type="p", xaxt="n")
+axis(1, at = seq(1, 44, by = 1), las=2)
+abline(h=1)
+```
+
+In these results, the first 20 principal components have standard deviation greater than 1 (Kaiser criterion).
+These three components explain 90,11% of the variation in the data.
+The plot shows that the standard deviation starts to form a line with higher slope until the sixth component. This means that the first six PCs have more influence in the variability of the data. 
+Nevertheless, the first 2 PCs are, without a doubt, the main influences in the data variability, since the standard deviation between them and the following ones is almost 1 unit.
+
+```{r}
+as.data.frame(MTBLS444_importance[2,])
+plot(MTBLS444_importance[2,],ylab = "Propotion of Variance",
+     xlab = "Principal Component",
+     main="Propotion of Variance vs Principal Component", pch=19,
+     col="red",
+     type="p", xaxt="n")
+axis(1, at = seq(1, 44, by = 1), las=2)
+```
+
+We can use the proportion to determine which principal components explain most of the variability in the data.
+The higher the proportion, the more variability that the principal component explains.
+The size of the proportion can help to decide whether the principal component is important enough to retain.
+In the plot it is evident that the proportion value declines rapidly within the first three PCs.
+So, it can be stated that they are the most important ones.
+
+```{r}
+as.data.frame(MTBLS444_importance[3,])
+plot(MTBLS444_importance[3,],ylab = "Cumulative Proportion",
+     xlab = "Principal Component",
+     main="Cumulative Proportion vs Principal Component", pch=19,
+     col="green",
+     type="p", xaxt="n")
+axis(1, at = seq(1, 44, by = 1), las=2)
+abline(h=.9)
+abline(v=20, lty=2)
+abline(h=.66)
+abline(v=7, lty=2)
+```
+
+The cumulative proportion is used to assess the total amount of variance that the consecutive principal components explain.
+Hence, as we can see, the first 20 PCs explain 90 % of the data variability, whereas almost 2/3 of the data variability is explained by the first 7 PCs.
+
+
+```{r}
+variabilidade_90=min(which(MTBLS444_importance[3,]>0.9))
+variabilidade_90
+```
+
+20 components that explain 90% of variability
+
+```{r}
+par(mfrow=c(1,2))
+plot(MTBLS444_pca$x[,1],MTBLS444_pca$x[,2], col=as.integer(MTBLS444$metadata$Tissue),
+     ylab = "PC2",
+     xlab = "PC1",
+     main="Scores", pch=19,
+     type="p",
+     ylim=c(-8,15),
+     xlim=c(-8,15))
+abline(h=0, lty=2)
+abline(v=0, lty=2)
+legend("topright",legend=c("Aqueous Humor","cornea"), col=c("black","red") , pch=19, cex=0.75)
+
+
+
+plot(MTBLS444_pca$x[,1],MTBLS444_pca$x[,2], col=as.integer(MTBLS444$metadata$Disease),
+     ylab = "PC2",
+     xlab = "PC1",
+     main="Scores", pch=19,
+     type="p",
+     ylim=c(-8,15),
+     xlim=c(-8,15))
+abline(h=0, lty=2)
+abline(v=0, lty=2)
+legend("topright",legend=c("Keratoconus","none"), col=c("black","red") , pch=19, cex=.75)
+
+
+
+plot(MTBLS444_pca$x[,1],MTBLS444_pca$x[,2], col=c(rep(1,7),rep(2,11),rep(3,13),rep(4,13)),
+     ylab = "PC2",
+     xlab = "PC1",
+     main="Scores", pch=19,
+     type="p",
+     ylim=c(-8,15),
+     xlim=c(-8,15))
+abline(h=0, lty=2)
+abline(v=0, lty=2)
+legend("topright",legend=c("KeratAH","KeratCorn", "NormAH", "NormCorn"), col=c("black","red","green","blue") , pch=19)
+```
+
+As can be seen in the plot of the scores, there is a difference in the influence of the data related to the different samples and the two first components.
+In general, the samples of NormAH were positively correlated with PC1.
+Whereas the samples of Cornea were negatively correlated with both PC1 and PC2.
+
+Finally, the samples of KeratAH (aqueous humor of patients with Keratoconus) were all positively correlated to PC2, achieving score values of 12.66 and 10.7.
+
+Even though cornea samples revealed to be very similar concerning the correlation with both PCs,
+The scores related to samples of Aqueous Humor suggest a difference within samples extracted from humans in different conditions (with and without disease), similarly to what was suggested by the heatmaps generated previously.
+
+```{r}
+plot(MTBLS444_pca$rotation[,1:2],   # x and y data
+     pch=21,              # point shape
+     bg="black",          # point color
+     cex=1,               # point size
+     main="Loadings of all chemical shifts"      # title of plot
+)
+text(MTBLS444_pca$rotation[,1:2],             # sets position of labels
+     labels=rownames(MTBLS444_pca$rotation) # print labels
+)
+
+
+par(mfrow=c(1,2))
+barplot(MTBLS444_pca$rotation[c("3.43","3.54"),1], las=2, main= "Loadings for PC1", ylab="Loadings",
+        xlab="Chemical Shift", ylim=c(-0.2,0.3), col=c("cyan","blue"), names.arg = c("Dihydrouracil", "Glycine"))
+barplot(MTBLS444_pca$rotation[c("3.43","3.54"),2], las=2, main= "Loadings for PC2", ylab="Loadings",
+        xlab="Chemical Shift", ylim=c(-0.2,0.3),col=c("cyan","blue"), names.arg = c("Dihydrouracil", "Glycine"))
+```
+
+```{r}
+pca_pairs_plot(MTBLS444, MTBLS444_pca, "Tissue", pcas = c(1,2,3))
+pca_pairs_plot(MTBLS444, MTBLS444_pca, "Disease", pcas = c(1,2,3))
+
+pca_kmeans_plot2D(MTBLS444, MTBLS444_pca, num.clusters = 2, pcas = c(1, 2))
+pca_pairs_kmeans_plot(MTBLS444, MTBLS444_pca, num.clusters = 3, pcas= c(1,2,3))
+```
+
+The barplots above have the loadings for both PC1 and PC2 of the chemical shifts associated with the metabolites differentially expressed.
+As can be seen in the plots, the loading value related to 3.54 suggest that this variable strongly influence PC1, whereas the loading value for 3.43 suggest that this variable strongly influences PC2.
+
+Since PC2 was positively correlated with the samples of KeratAH, the association between the metabolite related to the chemical shift of 3.43 (Dihydrouracil) and the disease seems plausible.
+
+
+# Clustering
+
+Clustering analysis was subsequently done using both a hierarchical and a K-means algorithm since both can handle the amount of data on the samples, and results were further analysed.
+
+## Hierarchical Clustering
+
+```{r HC clustering}
+MTBLS444_clustering_hc<-clustering(MTBLS444_Scaled, 
+                                   method = "hc", 
+                                   distance = "pearson",
+                                   clustMethod = "single")
+dendrogram_plot_col(MTBLS444_Scaled, 
+                    MTBLS444_clustering_hc, 
+                    "Tissue",
+                    title = "Dendogram by Tissue Samples", 
+                    leg.pos = "topright")
+dendrogram_plot_col(MTBLS444_Scaled, 
+                    MTBLS444_clustering_hc, 
+                    "Disease", 
+                    title = "Dendogram by Disease/Normal Samples",
+                    leg.pos = "topright")
+```
+
+Then, the respective dendrogram plots for hierarchical clustering data were analysed both according to the tissue, and to the Diseased/Normal states of the individuals. 
+
+## K-means Clustering
+
+```{r Kmeans clustering}
+MTBLS444_clustering_kmeans<-clustering(MTBLS444_Scaled, 
+                                       method = "kmeans", 
+                                       distance = "manhattan",
+                                       clustMethod = "centroid")
+
+as.data.frame(MTBLS444_clustering_kmeans$cluster)
+kmeans_plot(MTBLS444_Scaled, MTBLS444_clustering_kmeans)
+
+kmeans_tissue = table(MTBLS444_Scaled$metadata$Tissue, MTBLS444_clustering_kmeans$cluster)
+
+par(mfrow=c(2,1))
+
+kmeans_tissue
+barplot(kmeans_tissue,
+        beside = T,
+        col = c("cyan","blue"),
+        main = "Kmeans Clustering frequency by Tissue",
+        xlab = "Clusters",
+        ylab = "Number of Samples",
+        ylim = c(0,20)
+        )
+legend("topright",
+       legend=c("Keratoconus","none"),
+       col=c("cyan","blue"),
+       pch = 19,
+       xjust = 0.5, bty = "n")
+
+kmeans_disease = table(MTBLS444_Scaled$metadata$Disease, MTBLS444_clustering_kmeans$cluster)
+
+kmeans_disease
+barplot(kmeans_disease,
+        beside = T,         
+        col = c("cyan","blue"),
+        main = "Kmeans Clustering frequency by Condition",
+        xlab = "Clusters",
+        ylab = "Number of Samples",
+        ylim = c(0,20)
+)
+
+legend("topright",
+       legend=c("Keratoconus","none"),
+       col=c("cyan","blue"),
+       pch = 19,
+       xjust = 0.5, bty = "n")
+```
+
+For the k means, data was also separated according to the condition, plotted and shown in two additional tables for better understanding on how the aggregation of data was done.
+
+In sum, the tissues appear to be categorised in a somewhat similar way in both clustering algorithms. In a general overview, it appears that data is aggregated around their respective analysed conditions. Apart from a few discrepancies, distance data points towards a similarity relationship between normal corneas versus diseased ones, and the same applies to Aqueous Humor. Also, it is clear that diseased corneas and Aqueous Humor present themselves to be the most distant from each other. A plausible interpretation of these factors can be that the clear proximity of data from normal corneas and consequent distance between the diseased ones, and the fact that the same is applied for AH in both cases, suggest a difference in expression levels on these tissues, and their respectively state, being another evidence supporting the hypothesis that AH defficiently supplies corneas when affected with KC. 
+
+Yet another factor to consider would be the alive/deceased state, for this aggregation, although suggesting results closer to the ones expected, they don't take in consideration the post-mortem processes on the metabolites of these tissues. 
+
+
+# Machine Learning
+
+## Training models with all datasets using as final label the "Disease"
+
+```{r Disease data Training, message=FALSE, warning=FALSE}
+train_performance_disease<-train_models_performance(MTBLS444_Scaled, c("rf","ctree","naive_bayes","nb","pls"), "Disease", "loocv", 
+                         num.folds = 5, num.repeats = 10, tunelength = 10, 
+                         tunegrid = NULL, metric = NULL, compute.varimp = T)
+```
+The number of samples was relatively low. For this reason, the prediction made by the model is not expected to be as accurate as it should be.
+
+```{r}
+DT::datatable(train_performance_disease$performance)
+```
+The best model representation was the random forest, since the associated accuracy was 95% (the higher value within all model representations).
+
+```{r}
+train_performance_disease$confusion.matrices$rf
+```
+```{r, message=FALSE, warning=FALSE}
+f_selection_disease<-feature_selection(MTBLS444_Scaled, "Disease", method = "rfe", 
+                                       functions=caret::rfFuncs, validation = "repeatedcv", repeats = 5, 
+                                       number = 10, subsets = 2^(2:4))
+```
+```{r}
+top20_disease<-f_selection_disease$optVariables[1:20]
+as.data.frame(top20_disease)
+```
+
+The most relevant features suggest that some metabolites might be important markers when it comes to predict whether a specific metabolic profile corresponds to post-mortem conditions (without the disease) or to humans with the disease. The metabolites identified were: Acetate (1.9 ppm), Methionine (2.12 ppm), Choline (3.18 ppm), Citrate (2.64 ppm) and Taurine (3.23 ppm).
+
+
+## Training models with part of the dataset with final label "Disease"
+```{r Split Dataset Model Training with Disease as label}
+indices=sample(2,ncol(MTBLS444_Scaled$data), replace=T, prob=c(0.8,0.2))
+dataTr=MTBLS444_Scaled$data[,indices==1]
+dataTst=MTBLS444_Scaled$data[,indices==2]
+dataTr=subset_samples(MTBLS444_Scaled, colnames(dataTr))
+dataTst=subset_samples(MTBLS444_Scaled, colnames(dataTst))
+```
+```{r, message=FALSE, warning=FALSE}
+train_performance_disease_subset<-train_models_performance(dataTr, c("rf","ctree","naive_bayes","nb","pls"), "Disease", "loocv", 
+                                                           num.folds = 5, num.repeats = 10, tunelength = 10, 
+                                                           tunegrid = NULL, metric = NULL, compute.varimp = T)
+```
+```{r}
+DT::datatable(train_performance_disease_subset$performance)
+
+```
+
+The best model representation was the random forest, since the associated accuracy was 94% (the higher value within all model representations).
+
+```{r message=FALSE, warning=FALSE}
+predicted_values_disease_subset<-predict_samples(train_performance_disease_subset$final.models$rf, dataTst$data)
+```
+```{r}
+table(predicted_values_disease_subset$predicted.class, dataTst$metadata$Disease)
+```
+
+## Training models with all dataset, using as final label the type of tissue
+
+```{r message=FALSE, warning=FALSE}
+train_performance_tissue<-train_models_performance(MTBLS444_Scaled, c("rf","ctree","naive_bayes","nb","pls"), "Tissue", "loocv", 
+                                                    num.folds = 5, num.repeats = 10, tunelength = 10, 
+                                                    tunegrid = NULL, metric = NULL, compute.varimp = T)
+```
+```{r}
+DT::datatable(train_performance_tissue$performance)
+```
+
+The model representation with the highest accuracy was naive_bayes.
+
+``` {r, message=FALSE, warning=FALSE}
+train_performance_tissue$confusion.matrices$naive_bayes
+
+f_selection_tissue<-feature_selection(MTBLS444_Scaled, "Tissue", method = "rfe", 
+                                       functions=caret::rfFuncs, validation = "repeatedcv", repeats = 5, 
+                                       number = 10, subsets = 2^(2:4))
+```
+```{r}
+top20_tissue<-f_selection_tissue$optVariables[1:20]
+as.data.frame(top20_tissue)
+```
+
+The most relevant features were chemical shifts related to the following metabolites: Glycine (3.51 ppm), Valine (1.02 ppm), Lactate (4.1 ppm), Choline (3.18 pmm), Taurine (3.36 ppm), among others.
+
+Since the experimental data was obtained using 1H-NMR 700 MHz at 25ºC, and Specmine does not have specific libraries for identification of 700 MHz NMR, the identification of this metabolites were performed resorting to fig. 1.
+
+![Representation of 1H-NMR results taken from Snytkova et al. (2017).](NMR_Analysis.png)
+
+
+
+## Training models with part of the dataset, using as final label the type of tissue
+
+```{r, message=FALSE, warning=FALSE}
+train_performance_tissue_subset<-train_models_performance(dataTr, c("rf","ctree","naive_bayes","nb","pls"), "Tissue", "loocv", 
+                                                          num.folds = 5, num.repeats = 10, tunelength = 10, 
+                                                          tunegrid = NULL, metric = NULL, compute.varimp = T)
+```
+```{r}
+DT::datatable(train_performance_tissue_subset$performance)
+```
+```{r, message=FALSE, warning=FALSE}
+predicted_values_tissue_subset<-predict_samples(train_performance_tissue_subset$final.models$naive_bayes, dataTst$data)
+```
+```{r}
+table(predicted_values_tissue_subset$predicted.class, dataTst$metadata$Tissue)
+```
+
+It was performed a train of the model with different types of model representation in order to figure out which one was the best for the construction of a model to predict whether the sample corresponds to AH, cornea, disease or its absence.
+The final label is the presence of disease or its absence, or if it belongs to AH or cornea sample. The validation method considered was the leave-one-out. Afterwards, a feature selection was conducted to filter the chemical shifts which were more relevant for the prediction.
+
+As for the first 20 most important features selected, several chemical shifts were related to important metabolites associated to post mortem conditions and oxidative stress caused by the disease in cornea tissues.
+
+For instance, acetate (1.9 ppm) and citrate (2.64 ppm) shown to be higher in corneas of KC patients, suggesting that oxidative stress might be related to higher concentrations of the aforementioned compounds. Moreover, post-mortem conditions such as the lack of oxygen causes the increase in concentration levels of lactate (4.1 ppm) in AH. (Donaldson and Lamount 2013, 2015; Zelentsova et.al 2016) 
+
+Other post-mortem conditions, in particular the lack of energy alters important cell mechanisms such as Na+ - K+ water pumps, increase osmotic pressure, leakage of metabolites, etc. These phenomena lead to a significant increase of post-mortem biomarkers concentration in AH. These biomarkers could be choline (3.18 ppm),  taurine (3.36 ppm) and glycine (3.51 ppm). (Donaldson and Lamount 2013, 2014, 2015; Zelentsova et.al. 2016). These reports corroborate the feature selection results, since some of them were selected as relevant for training models in machine learning.
+
+# Conclusion 
+
+The present work has given us several insights into the metabolic profiles of Cornea and Aqueous Humor in Keratoconus patients and post-mortem samples (absence of disease).
+
+Even though the identification process with specmine package was not reliable, it was still possible to roughly identify 2 metabolites differentially expressed.
+The identified metabolites were Glycine and Dihydrouracil.
+
+Glycine was strongly correlated with PC1 in the PC Analysis which was also correlated with post-mortem conditions (NormKH samples).
+Futhermore, glycine-related pathway (Glutathione metabolism - hsa00480) and Dihydrouracil-related pathway (Pyrimidine metabolism - hsa00240) were likely associated with post-mortem biochemical processes. 
+
+The clustering analysis showed that the samples can be easily identified by their tissue but not as easily regarding their disease condition.
+
+In order to effectively train the prediction models, a higher number of samples would be required.
+The feature selection results show that Acetate (1.9 ppm) and Citrate (2.65 ppm) are relevant features for the prediction of health status (presence or absence of KC).
+These results are compliant with the reported results in literature, given these compounds are reported as being related to oxidative stress in corneas (Buddi et al. 2002; Arnal et al. 2011; Wojcik et al. 2013, 2014; Karamichos et al. 2014; Shoham et al. 2008).
+Additionally, other metabolites were considered as relevant features for the prediction of tissue type.
+As reported in literature, these metabolites (Lactate, Glycine, Choline, Taurine, etc) are biomarkers for the estimation of post-mortem interval and tend to accumulate in Aqueous Humor due to post-mortem biochemical processes (Donaldson and Lamount 2013, 2014, 2015; Zelentsova et al. 2016).
+Thus, these features seem to be in line with previous reports, therefore they seem to be good to train models regarding the type of tissue and health status.
+
