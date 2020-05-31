@@ -4,4 +4,4 @@ Keratoconus (KC) is the most common type of cornea dystrophia, having been shown
 
 The following data corresponds to the metabolic data from the NMR analysis and is accessible on MetaboLights through the codename MTBLS444 and it was processed using the help of Specmine. An R package which provides a set of methods for metabolomics data analysis, for example: data loading in different formats, pre-processing, metabolite identification, univariate and multivariate data analysis, machine learning, feature selection and pathway analysis.
 
-# To visualize the final report download the ... and open it.
+# To visualize the final report download the "Metabolomics_assignment.html" file and open it.
